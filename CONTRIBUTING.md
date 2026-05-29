@@ -1,32 +1,18 @@
-# Contributing to PIB
+# Contributing
 
-## Development Setup
+PRs and issues welcome. Ground rules:
+
+1. **One concern per PR.** Monitor changes separate from CA config separate from dashboard.
+2. **Test with a real CA.** Run `make up` and verify certificates are issued and metrics appear before opening a PR.
+3. **Dashboard changes:** export updated JSON from Grafana and replace `grafana/dashboards/pib-overview.json`.
+4. **Don't commit `ca/password.txt`** — it's in `.gitignore` for a reason.
+
+## Dev setup
 
 ```bash
-cd tracker
-pip install -r requirements.txt
-
-# Run against a local VictoriaMetrics (or test VM)
-VIB_VICTORIAMETRICS_URL=http://localhost:8428 \
-VICTORIAMETRICS_URL=http://localhost:8428 \
-python tracker.py --once
+cp .env.example .env
+make up
+docker logs -f pib-monitor
+# Check that pib_cert_days_remaining metrics appear
+curl -s http://localhost:8433/api/v1/query?query=pib_cert_days_remaining | jq .
 ```
-
-## Code Style
-
-- Python 3.12+
-- Keep `tracker.py` self-contained — no new external dependencies without updating `requirements.txt`
-- All external calls must handle errors gracefully — no single image failure should crash the tracker
-- Log at INFO level for cycle milestones, WARNING for recoverable errors, ERROR for push failures
-
-## Adding New Metrics
-
-1. Add the metric to `_build_prometheus_lines()` in `tracker.py`
-2. Add it to the `pib_overview.json` Grafana dashboard
-3. Document it in `README.md` metrics table
-
-## Pull Requests
-
-- Keep commits focused — one logical change per commit
-- Update `CHANGELOG.md` under an `[Unreleased]` heading
-- Ensure `make check-now` exits 0 before opening a PR

@@ -1,12 +1,18 @@
-# PIB Roadmap
+# Roadmap
 
-## v0.2 — Automated Remediation
+## v0.2
+- [ ] Grafana alert rule template: fire when any cert has < 14 days remaining
+- [ ] Telegram/Slack notification on cert expiry threshold breach
+- [ ] step-ca provisioner management via `make` targets (add provisioner, list certs issued)
+- [ ] OCSP responder metrics (step-ca supports OCSP — surface revocation stats)
 
-- Auto-PR generation for images where `newer_version_available=true` — open a GitHub PR updating the image tag in compose/Kubernetes manifests
-- Renovate integration — emit Renovate-compatible update hints so teams can opt into automated dependency update PRs
+## v0.3
+- [ ] Automatic cert renewal via ACME for monitored services (opt-in)
+- [ ] CRL (Certificate Revocation List) export and monitoring
+- [ ] SSH CA mode — use step-ca to issue short-lived SSH certificates instead of static keys
+- [ ] Integration with AIB — attach cert expiry data to asset nodes
 
-## v0.3 — SLA Enforcement
-
-- SLA breach alerts for unpatched KEV CVEs — trigger Grafana alert (→ PagerDuty / Slack / Telegram) when a KEV CVE has been known for more than N days without the image being updated
-- Configurable SLA windows per severity (e.g., KEV: 24h, Critical: 72h, High: 14d)
-- Breach history tracking in VictoriaMetrics for audit trails
+## Backlog
+- Multi-CA support (monitor certs from external CAs alongside PIB's own)
+- Hashicorp Vault PKI backend as an alternative to step-ca
+- Export cert inventory report as PDF for audits

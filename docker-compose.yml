@@ -1,33 +1,52 @@
 services:
 
-  pib-tracker:
-    build: ./tracker
-    container_name: pib-tracker
+  pib-ca:
+    image: smallstep/step-ca:latest
+    container_name: pib-ca
     restart: unless-stopped
+    ports:
+      - "${CA_PORT:-9000}:9000"
     environment:
-      VICTORIAMETRICS_URL: "http://pib-victoriametrics:8428"
-      VIB_VICTORIAMETRICS_URL: "${VIB_VICTORIAMETRICS_URL:-}"
-      TIB_VICTORIAMETRICS_URL: "${TIB_VICTORIAMETRICS_URL:-}"
-      CHECK_INTERVAL_HOURS: "${CHECK_INTERVAL_HOURS:-6}"
-      CHECK_ON_STARTUP: "${CHECK_ON_STARTUP:-true}"
-      CHECK_DOCKER_HUB: "${CHECK_DOCKER_HUB:-true}"
-    depends_on:
-      - pib-victoriametrics
+      - DOCKER_STEPCA_INIT_NAME=${CA_NAME:-PIB Root CA}
+      - DOCKER_STEPCA_INIT_DNS_NAMES=${CA_DNS_NAMES:-localhost,pib-ca}
+      - DOCKER_STEPCA_INIT_ADDRESS=:9000
+      - DOCKER_STEPCA_INIT_PASSWORD_FILE=/run/secrets/ca-password
+      - DOCKER_STEPCA_INIT_ACME=true
+    volumes:
+      - step-data:/home/step
+      - ./ca/password.txt:/run/secrets/ca-password:ro
     networks:
       - pib
 
+  pib-monitor:
+    build: ./monitor
+    container_name: pib-monitor
+    restart: unless-stopped
+    environment:
+      - VICTORIAMETRICS_URL=${VICTORIAMETRICS_URL:-http://pib-victoriametrics:8428}
+      - MONITOR_HOSTS=${MONITOR_HOSTS:-pib-ca:9000}
+      - SCAN_INTERVAL_HOURS=${SCAN_INTERVAL_HOURS:-6}
+      - SCAN_ON_STARTUP=${SCAN_ON_STARTUP:-true}
+      - WARN_DAYS=${WARN_DAYS:-30}
+      - CRITICAL_DAYS=${CRITICAL_DAYS:-7}
+    networks:
+      - pib
+    depends_on:
+      - pib-ca
+      - pib-victoriametrics
+
   pib-victoriametrics:
-    image: victoriametrics/victoria-metrics:latest
+    image: victoriametrics/victoria-metrics:stable
     container_name: pib-victoriametrics
     restart: unless-stopped
-    command:
-      - "--storageDataPath=/storage"
-      - "--retentionPeriod=${VICTORIAMETRICS_RETENTION:-90d}"
-      - "--httpListenAddr=:8428"
     ports:
       - "${VICTORIAMETRICS_PORT:-8433}:8428"
     volumes:
       - victoriametrics-data:/storage
+    command:
+      - --storageDataPath=/storage
+      - --retentionPeriod=${VICTORIAMETRICS_RETENTION:-365d}
+      - --httpListenAddr=:8428
     networks:
       - pib
 
@@ -35,25 +54,27 @@ services:
     image: grafana/grafana:latest
     container_name: pib-grafana
     restart: unless-stopped
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-CHANGE_ME}"
-      GF_PATHS_PROVISIONING: "/etc/grafana/provisioning"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/dashboards/pib-overview.json"
     ports:
       - "${GRAFANA_PORT:-3005}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/pib-overview.json
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/etc/grafana/dashboards:ro
-    depends_on:
-      - pib-victoriametrics
     networks:
       - pib
+    depends_on:
+      - pib-victoriametrics
 
 networks:
   pib:
-    driver: bridge
+    name: pib
 
 volumes:
+  step-data:
   victoriametrics-data:
   grafana-data:

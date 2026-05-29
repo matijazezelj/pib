@@ -1,0 +1,209 @@
+"""
+PIB Monitor — PKI in a Box
+
+Connects to configured TLS endpoints, inspects certificates, and pushes
+expiry metrics to VictoriaMetrics.
+"""
+
+import logging
+import os
+import socket
+import ssl
+import sys
+import time
+from datetime import datetime, timezone
+
+import requests
+import schedule
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("pib")
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+VICTORIAMETRICS_URL = os.environ.get("VICTORIAMETRICS_URL", "http://pib-victoriametrics:8428")
+SCAN_INTERVAL_HOURS = float(os.environ.get("SCAN_INTERVAL_HOURS", "6"))
+SCAN_ON_STARTUP = os.environ.get("SCAN_ON_STARTUP", "true").lower() == "true"
+
+# Comma-separated list of host or host:port to monitor (default port 443)
+MONITOR_HOSTS = [
+    h.strip() for h in os.environ.get("MONITOR_HOSTS", "").split(",") if h.strip()
+]
+
+# Always monitor the local CA if configured
+CA_HOST = os.environ.get("CA_HOST", "pib-ca:9000")
+if CA_HOST and CA_HOST not in MONITOR_HOSTS:
+    MONITOR_HOSTS.insert(0, CA_HOST)
+
+# Thresholds for warning/critical stats
+WARN_DAYS = int(os.environ.get("WARN_DAYS", "30"))
+CRITICAL_DAYS = int(os.environ.get("CRITICAL_DAYS", "7"))
+
+SESSION = requests.Session()
+
+
+# ── TLS cert inspection ───────────────────────────────────────────────────────
+
+def _parse_host_port(entry: str) -> tuple[str, int]:
+    if ":" in entry:
+        host, port = entry.rsplit(":", 1)
+        return host, int(port)
+    return entry, 443
+
+
+def check_cert(entry: str) -> dict | None:
+    host, port = _parse_host_port(entry)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    # We intentionally accept any cert — we want to inspect even expired/self-signed
+    ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        with socket.create_connection((host, port), timeout=10) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                der = ssock.getpeercert(binary_form=True)
+                cert = ssock.getpeercert()
+    except Exception as e:
+        logger.warning("Could not connect to %s:%d — %s", host, port, e)
+        return None
+
+    not_after_str = cert.get("notAfter", "")
+    not_before_str = cert.get("notBefore", "")
+
+    try:
+        not_after = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        not_before = datetime.strptime(not_before_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    except ValueError as e:
+        logger.warning("Could not parse cert dates for %s: %s", entry, e)
+        return None
+
+    now = datetime.now(timezone.utc)
+    days_remaining = (not_after - now).days
+
+    subject = dict(x[0] for x in cert.get("subject", []))
+    issuer = dict(x[0] for x in cert.get("issuer", []))
+    sans = [v for t, v in cert.get("subjectAltName", []) if t == "DNS"]
+
+    cn = subject.get("commonName", host)
+    issuer_cn = issuer.get("commonName", "unknown")
+    serial = cert.get("serialNumber", "")
+
+    return {
+        "host": entry,
+        "cn": cn,
+        "sans": ",".join(sans) if sans else cn,
+        "issuer": issuer_cn,
+        "serial": serial,
+        "not_before": not_before.isoformat(),
+        "not_after": not_after.isoformat(),
+        "days_remaining": days_remaining,
+        "valid_days": (not_after - not_before).days,
+        "is_expired": days_remaining < 0,
+        "is_warning": 0 <= days_remaining < WARN_DAYS,
+        "is_critical": 0 <= days_remaining < CRITICAL_DAYS,
+    }
+
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+
+def _safe_label(s: str) -> str:
+    return str(s).replace('"', '\\"').replace("\n", "").replace("\\", "\\\\")
+
+
+def _ts_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def push_metrics(certs: list[dict]) -> None:
+    ts = _ts_ms()
+    lines = []
+
+    expired = sum(1 for c in certs if c["is_expired"])
+    expiring_warn = sum(1 for c in certs if c["is_warning"])
+    expiring_crit = sum(1 for c in certs if c["is_critical"])
+
+    lines += [
+        f"pib_certs_total {len(certs)} {ts}",
+        f"pib_certs_expired {expired} {ts}",
+        f"pib_certs_expiring_warning {expiring_warn} {ts}",
+        f"pib_certs_expiring_critical {expiring_crit} {ts}",
+        f"pib_last_scan_timestamp {ts} {ts}",
+    ]
+
+    for c in certs:
+        labels = (
+            f'host="{_safe_label(c["host"])}",'
+            f'cn="{_safe_label(c["cn"])}",'
+            f'issuer="{_safe_label(c["issuer"])}",'
+            f'sans="{_safe_label(c["sans"])}"'
+        )
+        lines += [
+            f"pib_cert_days_remaining{{{labels}}} {c['days_remaining']} {ts}",
+            f"pib_cert_expiry_timestamp{{{labels}}} {int(datetime.fromisoformat(c['not_after']).timestamp() * 1000)} {ts}",
+            f"pib_cert_valid_days{{{labels}}} {c['valid_days']} {ts}",
+        ]
+
+    payload = "\n".join(lines) + "\n"
+    try:
+        SESSION.post(
+            f"{VICTORIAMETRICS_URL}/api/v1/import/prometheus",
+            data=payload,
+            headers={"Content-Type": "text/plain"},
+            timeout=10,
+        ).raise_for_status()
+    except Exception as e:
+        logger.error("Metric push failed: %s", e)
+
+
+# ── Scan cycle ────────────────────────────────────────────────────────────────
+
+def run_scan() -> None:
+    if not MONITOR_HOSTS:
+        logger.warning("No hosts configured. Set MONITOR_HOSTS env var.")
+        push_metrics([])
+        return
+
+    logger.info("─── PIB scan: %d hosts ───", len(MONITOR_HOSTS))
+    certs = []
+
+    for entry in MONITOR_HOSTS:
+        cert = check_cert(entry)
+        if cert is None:
+            continue
+        certs.append(cert)
+        status = "EXPIRED" if cert["is_expired"] else (
+            "CRITICAL" if cert["is_critical"] else (
+                "WARNING" if cert["is_warning"] else "OK"
+            )
+        )
+        logger.info("  %s — %s — %d days remaining [%s]",
+                    entry, cert["cn"], cert["days_remaining"], status)
+
+    push_metrics(certs)
+    logger.info("─── PIB scan complete: %d/%d certs checked ───", len(certs), len(MONITOR_HOSTS))
+
+
+def main() -> None:
+    if "--once" in sys.argv:
+        run_scan()
+        return
+
+    logger.info("PIB monitor starting (interval=%.1fh, warn=%dd, critical=%dd)",
+                SCAN_INTERVAL_HOURS, WARN_DAYS, CRITICAL_DAYS)
+
+    if SCAN_ON_STARTUP:
+        run_scan()
+
+    schedule.every(SCAN_INTERVAL_HOURS).hours.do(run_scan)
+
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+
+if __name__ == "__main__":
+    main()
