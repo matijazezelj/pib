@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: VictoriaMetrics
+    uid: pib-vm
+    type: prometheus
+    url: http://pib-victoriametrics:8428
+    access: proxy
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      prometheusType: Prometheus

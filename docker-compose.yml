@@ -1,0 +1,59 @@
+services:
+
+  pib-tracker:
+    build: ./tracker
+    container_name: pib-tracker
+    restart: unless-stopped
+    environment:
+      VICTORIAMETRICS_URL: "http://pib-victoriametrics:8428"
+      VIB_VICTORIAMETRICS_URL: "${VIB_VICTORIAMETRICS_URL:-}"
+      TIB_VICTORIAMETRICS_URL: "${TIB_VICTORIAMETRICS_URL:-}"
+      CHECK_INTERVAL_HOURS: "${CHECK_INTERVAL_HOURS:-6}"
+      CHECK_ON_STARTUP: "${CHECK_ON_STARTUP:-true}"
+      CHECK_DOCKER_HUB: "${CHECK_DOCKER_HUB:-true}"
+    depends_on:
+      - pib-victoriametrics
+    networks:
+      - pib
+
+  pib-victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    container_name: pib-victoriametrics
+    restart: unless-stopped
+    command:
+      - "--storageDataPath=/storage"
+      - "--retentionPeriod=${VICTORIAMETRICS_RETENTION:-90d}"
+      - "--httpListenAddr=:8428"
+    ports:
+      - "${VICTORIAMETRICS_PORT:-8433}:8428"
+    volumes:
+      - victoriametrics-data:/storage
+    networks:
+      - pib
+
+  pib-grafana:
+    image: grafana/grafana:latest
+    container_name: pib-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-CHANGE_ME}"
+      GF_PATHS_PROVISIONING: "/etc/grafana/provisioning"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/dashboards/pib-overview.json"
+    ports:
+      - "${GRAFANA_PORT:-3005}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - pib-victoriametrics
+    networks:
+      - pib
+
+networks:
+  pib:
+    driver: bridge
+
+volumes:
+  victoriametrics-data:
+  grafana-data:
