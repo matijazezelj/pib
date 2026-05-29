@@ -6,6 +6,8 @@ PIB runs [step-ca](https://smallstep.com/docs/step-ca/) as a self-hosted root CA
 
 Part of the [in-a-box-tools](https://in-a-box-tools.tech) ecosystem.
 
+![Dashboard preview](docs/dashboard-preview.png)
+
 ---
 
 ## What you get
@@ -138,7 +140,7 @@ make clean            # stop and delete all volumes (destroys CA and data)
 | [VIB](https://github.com/matijazezelj/vib) | Vulnerability in a Box — CVE scanning |
 | [TIB](https://github.com/matijazezelj/tib) | Threat Intelligence in a Box — KEV + EPSS |
 | [CIB](https://github.com/matijazezelj/cib) | Compliance in a Box — policy + license + EOL |
-| [IIB](https://github.com/matijazezelj/iib) | Incident in a Box — incident management |
+| [IIB](https://github.com/matijazezelj/iib) | Identity in a Box — SSO, IdP, login metrics |
 | **PIB** | **PKI in a Box** |
 
 ---
