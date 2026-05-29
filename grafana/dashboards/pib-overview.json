@@ -37,7 +37,7 @@
       },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "pib-vm" },
-        "expr": "pib_certs_expiring_critical",
+        "expr": "last_over_time(pib_certs_expiring_critical[8h])",
         "legendFormat": "Critical",
         "refId": "A"
       }]
@@ -69,7 +69,7 @@
       },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "pib-vm" },
-        "expr": "pib_certs_expiring_warning",
+        "expr": "last_over_time(pib_certs_expiring_warning[8h])",
         "legendFormat": "Warning",
         "refId": "A"
       }]
@@ -101,7 +101,7 @@
       },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "pib-vm" },
-        "expr": "pib_certs_expired",
+        "expr": "last_over_time(pib_certs_expired[8h])",
         "legendFormat": "Expired",
         "refId": "A"
       }]
@@ -127,7 +127,7 @@
       },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "pib-vm" },
-        "expr": "pib_certs_total",
+        "expr": "last_over_time(pib_certs_total[8h])",
         "legendFormat": "Certs",
         "refId": "A"
       }]
@@ -203,7 +203,7 @@
       ],
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "pib-vm" },
-        "expr": "pib_cert_days_remaining",
+        "expr": "last_over_time(pib_cert_days_remaining[8h])",
         "instant": true,
         "legendFormat": "{{host}}",
         "refId": "A"
