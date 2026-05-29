@@ -13,7 +13,7 @@ services:
       - DOCKER_STEPCA_INIT_PASSWORD_FILE=/run/secrets/ca-password
       - DOCKER_STEPCA_INIT_ACME=true
     volumes:
-      - step-data:/home/step
+      - pib-step-data:/home/step
       - ./ca/password.txt:/run/secrets/ca-password:ro
     networks:
       - pib
@@ -36,13 +36,13 @@ services:
       - pib-victoriametrics
 
   pib-victoriametrics:
-    image: victoriametrics/victoria-metrics:stable
+    image: victoriametrics/victoria-metrics:latest
     container_name: pib-victoriametrics
     restart: unless-stopped
     ports:
       - "${VICTORIAMETRICS_PORT:-8433}:8428"
     volumes:
-      - victoriametrics-data:/storage
+      - pib-victoriametrics-data:/storage
     command:
       - --storageDataPath=/storage
       - --retentionPeriod=${VICTORIAMETRICS_RETENTION:-365d}
@@ -62,7 +62,7 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/pib-overview.json
     volumes:
-      - grafana-data:/var/lib/grafana
+      - pib-grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
@@ -75,6 +75,6 @@ networks:
     name: pib
 
 volumes:
-  step-data:
-  victoriametrics-data:
-  grafana-data:
+  pib-step-data:
+  pib-victoriametrics-data:
+  pib-grafana-data:
