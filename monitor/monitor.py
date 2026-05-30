@@ -7,6 +7,7 @@ expiry metrics to VictoriaMetrics.
 
 import logging
 import os
+import signal
 import socket
 import ssl
 import sys
@@ -26,6 +27,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pib")
 
+_shutdown = False
+
+
+def _handle_sigterm(signum, frame):
+    global _shutdown
+    _shutdown = True
+
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 VICTORIAMETRICS_URL = os.environ.get("VICTORIAMETRICS_URL", "http://pib-victoriametrics:8428")
@@ -38,7 +49,7 @@ MONITOR_HOSTS = [
 ]
 
 # Always monitor the local CA if configured
-CA_HOST = os.environ.get("CA_HOST", "pib-ca:9000")
+CA_HOST = os.environ.get("CA_HOST", "")
 if CA_HOST and CA_HOST not in MONITOR_HOSTS:
     MONITOR_HOSTS.insert(0, CA_HOST)
 
@@ -67,6 +78,7 @@ def check_cert(entry: str) -> dict | None:
 
     try:
         with socket.create_connection((host, port), timeout=10) as sock:
+            sock.settimeout(10)
             with ctx.wrap_socket(sock, server_hostname=host) as ssock:
                 der = ssock.getpeercert(binary_form=True)
     except Exception as e:
@@ -82,7 +94,10 @@ def check_cert(entry: str) -> dict | None:
     not_after = cert_obj.not_valid_after_utc
     not_before = cert_obj.not_valid_before_utc
     now = datetime.now(timezone.utc)
-    days_remaining = (not_after - now).days
+    days_remaining = int((not_after - now).total_seconds() / 86400)
+    is_expired = days_remaining < 0
+    is_critical = not is_expired and days_remaining < CRITICAL_DAYS
+    is_warning = not is_expired and not is_critical and days_remaining < WARN_DAYS
 
     try:
         cn = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
@@ -110,17 +125,17 @@ def check_cert(entry: str) -> dict | None:
         "not_before": not_before.isoformat(),
         "not_after": not_after.isoformat(),
         "days_remaining": days_remaining,
-        "valid_days": (not_after - not_before).days,
-        "is_expired": days_remaining < 0,
-        "is_warning": 0 <= days_remaining < WARN_DAYS,
-        "is_critical": 0 <= days_remaining < CRITICAL_DAYS,
+        "valid_days": int((not_after - not_before).total_seconds() / 86400),
+        "is_expired": is_expired,
+        "is_warning": is_warning,
+        "is_critical": is_critical,
     }
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
-def _safe_label(s: str) -> str:
-    return str(s).replace('"', '\\"').replace("\n", "").replace("\\", "\\\\")
+def _safe_label(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _ts_ms() -> int:
@@ -210,6 +225,9 @@ def main() -> None:
     schedule.every(SCAN_INTERVAL_HOURS).hours.do(run_scan)
 
     while True:
+        if _shutdown:
+            logger.info("SIGTERM received, exiting.")
+            break
         schedule.run_pending()
         time.sleep(60)
 
