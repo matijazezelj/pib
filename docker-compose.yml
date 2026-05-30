@@ -5,7 +5,7 @@ services:
     container_name: pib-ca
     restart: unless-stopped
     ports:
-      - "${CA_PORT:-9000}:9000"
+      - "${BIND_ADDR:-127.0.0.1}:${CA_PORT:-9000}:9000"
     environment:
       - DOCKER_STEPCA_INIT_NAME=${CA_NAME:-PIB Root CA}
       - DOCKER_STEPCA_INIT_DNS_NAMES=${CA_DNS_NAMES:-localhost,pib-ca}
@@ -40,7 +40,7 @@ services:
     container_name: pib-victoriametrics
     restart: unless-stopped
     ports:
-      - "${VICTORIAMETRICS_PORT:-8433}:8428"
+      - "${BIND_ADDR:-127.0.0.1}:${VICTORIAMETRICS_PORT:-8433}:8428"
     volumes:
       - pib-victoriametrics-data:/storage
     command:
@@ -55,7 +55,7 @@ services:
     container_name: pib-grafana
     restart: unless-stopped
     ports:
-      - "${GRAFANA_PORT:-3005}:3000"
+      - "${BIND_ADDR:-127.0.0.1}:${GRAFANA_PORT:-3005}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
