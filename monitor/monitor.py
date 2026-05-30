@@ -5,19 +5,21 @@ Connects to configured TLS endpoints, inspects certificates, and pushes
 expiry metrics to VictoriaMetrics.
 """
 
+import ipaddress
 import logging
+import math
 import os
 import signal
 import socket
 import ssl
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
 import requests
 import schedule
 from cryptography import x509
-from cryptography.hazmat.backends import default_backend
 from cryptography.x509.oid import NameOID
 
 logging.basicConfig(
@@ -27,20 +29,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pib")
 
-_shutdown = False
+_shutdown = threading.Event()
 
 
 def _handle_sigterm(signum, frame):
-    global _shutdown
-    _shutdown = True
+    _shutdown.set()
 
 
 signal.signal(signal.SIGTERM, _handle_sigterm)
+signal.signal(signal.SIGINT, _handle_sigterm)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 VICTORIAMETRICS_URL = os.environ.get("VICTORIAMETRICS_URL", "http://pib-victoriametrics:8428")
-SCAN_INTERVAL_HOURS = float(os.environ.get("SCAN_INTERVAL_HOURS", "6"))
+
+
+def _int_env(name: str, default: str) -> int:
+    raw = os.environ.get(name, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as e:
+        logger.error("Invalid value for env var %s=%r: %s", name, raw, e)
+        sys.exit(1)
+
+
+def _float_env(name: str, default: str) -> float:
+    raw = os.environ.get(name, default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as e:
+        logger.error("Invalid value for env var %s=%r: %s", name, raw, e)
+        sys.exit(1)
+
+
+SCAN_INTERVAL_HOURS = _float_env("SCAN_INTERVAL_HOURS", "6")
 SCAN_ON_STARTUP = os.environ.get("SCAN_ON_STARTUP", "true").lower() == "true"
 
 # Comma-separated list of host or host:port to monitor (default port 443)
@@ -54,8 +76,8 @@ if CA_HOST and CA_HOST not in MONITOR_HOSTS:
     MONITOR_HOSTS.insert(0, CA_HOST)
 
 # Thresholds for warning/critical stats
-WARN_DAYS = int(os.environ.get("WARN_DAYS", "30"))
-CRITICAL_DAYS = int(os.environ.get("CRITICAL_DAYS", "7"))
+WARN_DAYS = _int_env("WARN_DAYS", "30")
+CRITICAL_DAYS = _int_env("CRITICAL_DAYS", "7")
 
 SESSION = requests.Session()
 
@@ -63,10 +85,27 @@ SESSION = requests.Session()
 # ── TLS cert inspection ───────────────────────────────────────────────────────
 
 def _parse_host_port(entry: str) -> tuple[str, int]:
-    if ":" in entry:
+    # Handle [::1]:443 style bracketed IPv6
+    if entry.startswith("["):
+        end = entry.find("]")
+        if end != -1:
+            host = entry[1:end]
+            rest = entry[end + 1:]
+            if rest.startswith(":"):
+                return host, int(rest[1:])
+            return host, 443
+    if ":" in entry and entry.count(":") == 1:
         host, port = entry.rsplit(":", 1)
         return host, int(port)
     return entry, 443
+
+
+def _is_ip_address(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
 
 
 def check_cert(entry: str) -> dict | None:
@@ -76,60 +115,74 @@ def check_cert(entry: str) -> dict | None:
     # We intentionally accept any cert — we want to inspect even expired/self-signed
     ctx.verify_mode = ssl.CERT_NONE
 
+    # SNI doesn't accept IP literals — pass None for IPs
+    server_hostname = None if _is_ip_address(host) else host
+
     try:
         with socket.create_connection((host, port), timeout=10) as sock:
             sock.settimeout(10)
-            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+            with ctx.wrap_socket(sock, server_hostname=server_hostname) as ssock:
                 der = ssock.getpeercert(binary_form=True)
     except Exception as e:
         logger.warning("Could not connect to %s:%d — %s", host, port, e)
         return None
 
+    if der is None:
+        logger.warning("TLS handshake completed but no cert returned for %s", entry)
+        return None
+
     try:
-        cert_obj = x509.load_der_x509_certificate(der, default_backend())
+        cert_obj = x509.load_der_x509_certificate(der)
     except Exception as e:
         logger.warning("Could not parse DER cert for %s: %s", entry, e)
         return None
 
-    not_after = cert_obj.not_valid_after_utc
-    not_before = cert_obj.not_valid_before_utc
-    now = datetime.now(timezone.utc)
-    days_remaining = int((not_after - now).total_seconds() / 86400)
-    is_expired = days_remaining < 0
-    is_critical = not is_expired and days_remaining < CRITICAL_DAYS
-    is_warning = not is_expired and not is_critical and days_remaining < WARN_DAYS
-
     try:
-        cn = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
-    except IndexError:
-        cn = host
-    try:
-        issuer_cn = cert_obj.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
-    except IndexError:
-        issuer_cn = "unknown"
+        not_after = cert_obj.not_valid_after_utc
+        not_before = cert_obj.not_valid_before_utc
+        now = datetime.now(timezone.utc)
+        # math.floor handles negative deltas correctly: -0.5 → -1
+        days_remaining = math.floor((not_after - now).total_seconds() / 86400)
+        is_expired = days_remaining < 0
+        is_not_yet_valid = now < not_before
+        is_critical = not is_expired and days_remaining < CRITICAL_DAYS
+        is_warning = not is_expired and not is_critical and days_remaining < WARN_DAYS
 
-    try:
-        san_ext = cert_obj.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-        sans = san_ext.value.get_values_for_type(x509.DNSName)
-    except x509.ExtensionNotFound:
-        sans = []
+        try:
+            cn = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+        except IndexError:
+            cn = host
+        try:
+            issuer_cn = cert_obj.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+        except IndexError:
+            issuer_cn = "unknown"
 
-    serial = str(cert_obj.serial_number)
+        try:
+            san_ext = cert_obj.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+            sans = san_ext.value.get_values_for_type(x509.DNSName)
+        except x509.ExtensionNotFound:
+            sans = []
 
-    return {
-        "host": entry,
-        "cn": cn,
-        "sans": ",".join(sans) if sans else cn,
-        "issuer": issuer_cn,
-        "serial": serial,
-        "not_before": not_before.isoformat(),
-        "not_after": not_after.isoformat(),
-        "days_remaining": days_remaining,
-        "valid_days": int((not_after - not_before).total_seconds() / 86400),
-        "is_expired": is_expired,
-        "is_warning": is_warning,
-        "is_critical": is_critical,
-    }
+        serial = str(cert_obj.serial_number)
+
+        return {
+            "host": entry,
+            "cn": cn,
+            "sans": ",".join(sans) if sans else cn,
+            "issuer": issuer_cn,
+            "serial": serial,
+            "not_before": not_before.isoformat(),
+            "not_after": not_after.isoformat(),
+            "days_remaining": days_remaining,
+            "valid_days": int((not_after - not_before).total_seconds() / 86400),
+            "is_expired": is_expired,
+            "is_not_yet_valid": is_not_yet_valid,
+            "is_warning": is_warning,
+            "is_critical": is_critical,
+        }
+    except Exception as e:
+        logger.warning("Error processing cert for %s: %s", entry, e)
+        return None
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -169,18 +222,32 @@ def push_metrics(certs: list[dict]) -> None:
             f"pib_cert_days_remaining{{{labels}}} {c['days_remaining']} {ts}",
             f"pib_cert_expiry_timestamp{{{labels}}} {int(datetime.fromisoformat(c['not_after']).timestamp() * 1000)} {ts}",
             f"pib_cert_valid_days{{{labels}}} {c['valid_days']} {ts}",
+            f"pib_cert_not_yet_valid{{{labels}}} {1 if c['is_not_yet_valid'] else 0} {ts}",
         ]
 
     payload = "\n".join(lines) + "\n"
-    try:
-        SESSION.post(
-            f"{VICTORIAMETRICS_URL}/api/v1/import/prometheus",
-            data=payload,
-            headers={"Content-Type": "text/plain"},
-            timeout=10,
-        ).raise_for_status()
-    except Exception as e:
-        logger.error("Metric push failed: %s", e)
+    url = f"{VICTORIAMETRICS_URL}/api/v1/import/prometheus"
+    headers = {"Content-Type": "text/plain"}
+
+    for attempt in (1, 2):
+        try:
+            resp = SESSION.post(url, data=payload, headers=headers, timeout=10)
+            if 500 <= resp.status_code < 600 and attempt == 1:
+                logger.warning("Metric push got HTTP %d, retrying in 2s", resp.status_code)
+                time.sleep(2)
+                continue
+            resp.raise_for_status()
+            return
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if attempt == 1:
+                logger.warning("Metric push connection error: %s — retrying in 2s", e)
+                time.sleep(2)
+                continue
+            logger.error("Metric push failed after retry: %s", e)
+            return
+        except Exception as e:
+            logger.error("Metric push failed: %s", e)
+            return
 
 
 # ── Scan cycle ────────────────────────────────────────────────────────────────
@@ -224,12 +291,10 @@ def main() -> None:
 
     schedule.every(SCAN_INTERVAL_HOURS).hours.do(run_scan)
 
-    while True:
-        if _shutdown:
-            logger.info("SIGTERM received, exiting.")
-            break
+    while not _shutdown.is_set():
         schedule.run_pending()
-        time.sleep(60)
+        _shutdown.wait(60)
+    logger.info("Shutdown signal received, exiting.")
 
 
 if __name__ == "__main__":
