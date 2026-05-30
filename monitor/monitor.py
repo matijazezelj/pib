@@ -15,6 +15,9 @@ from datetime import datetime, timezone
 
 import requests
 import schedule
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509.oid import NameOID
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,31 +69,37 @@ def check_cert(entry: str) -> dict | None:
         with socket.create_connection((host, port), timeout=10) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as ssock:
                 der = ssock.getpeercert(binary_form=True)
-                cert = ssock.getpeercert()
     except Exception as e:
         logger.warning("Could not connect to %s:%d — %s", host, port, e)
         return None
 
-    not_after_str = cert.get("notAfter", "")
-    not_before_str = cert.get("notBefore", "")
-
     try:
-        not_after = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
-        not_before = datetime.strptime(not_before_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
-    except ValueError as e:
-        logger.warning("Could not parse cert dates for %s: %s", entry, e)
+        cert_obj = x509.load_der_x509_certificate(der, default_backend())
+    except Exception as e:
+        logger.warning("Could not parse DER cert for %s: %s", entry, e)
         return None
 
+    not_after = cert_obj.not_valid_after_utc
+    not_before = cert_obj.not_valid_before_utc
     now = datetime.now(timezone.utc)
     days_remaining = (not_after - now).days
 
-    subject = dict(x[0] for x in cert.get("subject", []))
-    issuer = dict(x[0] for x in cert.get("issuer", []))
-    sans = [v for t, v in cert.get("subjectAltName", []) if t == "DNS"]
+    try:
+        cn = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+    except IndexError:
+        cn = host
+    try:
+        issuer_cn = cert_obj.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+    except IndexError:
+        issuer_cn = "unknown"
 
-    cn = subject.get("commonName", host)
-    issuer_cn = issuer.get("commonName", "unknown")
-    serial = cert.get("serialNumber", "")
+    try:
+        san_ext = cert_obj.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        sans = san_ext.value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        sans = []
+
+    serial = str(cert_obj.serial_number)
 
     return {
         "host": entry,
