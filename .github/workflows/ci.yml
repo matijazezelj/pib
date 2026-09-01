@@ -17,6 +17,12 @@ jobs:
         run: |
           files=$(git ls-files '*.py')
           if [ -n "$files" ]; then python -m py_compile $files; fi
+      - name: Monitor tests
+        run: |
+          pip install --quiet -r monitor/requirements.txt
+          python monitor/test_monitor.py
+      - name: Validate alert rules parse
+        run: python -c "import yaml,sys; yaml.safe_load(open('grafana/provisioning/alerting/rules.yaml'))"
       - name: Build local images
         run: |
           docker compose build
