@@ -1,8 +1,8 @@
 # Roadmap
 
 ## v0.2
-- [ ] Grafana alert rule template: fire when any cert has < 14 days remaining
-- [ ] Telegram/Slack notification on cert expiry threshold breach
+- [x] Grafana alert rule template — provisioned in `grafana/provisioning/alerting/`
+- [x] Slack/webhook notification on cert expiry threshold breach
 - [ ] step-ca provisioner management via `make` targets (add provisioner, list certs issued)
 - [ ] OCSP responder metrics (step-ca supports OCSP — surface revocation stats)
 
