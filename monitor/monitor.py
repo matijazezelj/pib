@@ -84,6 +84,16 @@ SESSION = requests.Session()
 
 # ── TLS cert inspection ───────────────────────────────────────────────────────
 
+def _parse_port(raw: str) -> int:
+    try:
+        port = int(raw)
+    except ValueError:
+        raise ValueError(f"invalid port {raw!r}") from None
+    if not 1 <= port <= 65535:
+        raise ValueError(f"port out of range: {port}")
+    return port
+
+
 def _parse_host_port(entry: str) -> tuple[str, int]:
     # Handle [::1]:443 style bracketed IPv6
     if entry.startswith("["):
@@ -92,11 +102,11 @@ def _parse_host_port(entry: str) -> tuple[str, int]:
             host = entry[1:end]
             rest = entry[end + 1:]
             if rest.startswith(":"):
-                return host, int(rest[1:])
+                return host, _parse_port(rest[1:])
             return host, 443
     if ":" in entry and entry.count(":") == 1:
         host, port = entry.rsplit(":", 1)
-        return host, int(port)
+        return host, _parse_port(port)
     return entry, 443
 
 
@@ -109,7 +119,12 @@ def _is_ip_address(host: str) -> bool:
 
 
 def check_cert(entry: str) -> dict | None:
-    host, port = _parse_host_port(entry)
+    try:
+        host, port = _parse_host_port(entry)
+    except ValueError as e:
+        logger.warning("Skipping malformed MONITOR_HOSTS entry %r: %s", entry, e)
+        return None
+
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     # We intentionally accept any cert — we want to inspect even expired/self-signed
@@ -195,7 +210,7 @@ def _ts_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-def push_metrics(certs: list[dict]) -> None:
+def push_metrics(certs: list[dict], failed: list[str]) -> None:
     ts = _ts_ms()
     lines = []
 
@@ -208,8 +223,18 @@ def push_metrics(certs: list[dict]) -> None:
         f"pib_certs_expired {expired} {ts}",
         f"pib_certs_expiring_warning {expiring_warn} {ts}",
         f"pib_certs_expiring_critical {expiring_crit} {ts}",
+        f"pib_certs_unreachable {len(failed)} {ts}",
         f"pib_last_scan_timestamp {ts} {ts}",
     ]
+
+    # Emitted for every configured host, including ones we could not reach —
+    # without this a host that stops responding just keeps serving its last
+    # known days_remaining and the expiry countdown silently freezes.
+    for entry in [c["host"] for c in certs] + failed:
+        lines.append(
+            f'pib_cert_check_success{{host="{_safe_label(entry)}"}} '
+            f'{0 if entry in failed else 1} {ts}'
+        )
 
     for c in certs:
         labels = (
@@ -255,15 +280,17 @@ def push_metrics(certs: list[dict]) -> None:
 def run_scan() -> None:
     if not MONITOR_HOSTS:
         logger.warning("No hosts configured. Set MONITOR_HOSTS env var.")
-        push_metrics([])
+        push_metrics([], [])
         return
 
     logger.info("─── PIB scan: %d hosts ───", len(MONITOR_HOSTS))
     certs = []
+    failed = []
 
     for entry in MONITOR_HOSTS:
         cert = check_cert(entry)
         if cert is None:
+            failed.append(entry)
             continue
         certs.append(cert)
         status = "EXPIRED" if cert["is_expired"] else (
@@ -274,8 +301,9 @@ def run_scan() -> None:
         logger.info("  %s — %s — %d days remaining [%s]",
                     entry, cert["cn"], cert["days_remaining"], status)
 
-    push_metrics(certs)
-    logger.info("─── PIB scan complete: %d/%d certs checked ───", len(certs), len(MONITOR_HOSTS))
+    push_metrics(certs, failed)
+    logger.info("─── PIB scan complete: %d/%d certs checked, %d unreachable ───",
+                len(certs), len(MONITOR_HOSTS), len(failed))
 
 
 def main() -> None:
