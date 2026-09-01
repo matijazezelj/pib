@@ -193,11 +193,81 @@
       }]
     },
     {
+      "id": 9,
+      "type": "stat",
+      "title": "Root CA expires in",
+      "description": "Replacing the root means re-anchoring trust on every machine that trusts this CA. Thresholds follow CA_WARN_DAYS / CA_CRITICAL_DAYS, not the leaf-cert ones.",
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "dark-red", "value": null },
+              { "color": "orange", "value": 90 },
+              { "color": "green", "value": 365 }
+            ]
+          },
+          "mappings": []
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "pib-vm" },
+        "expr": "last_over_time(pib_cert_days_remaining{kind=\"root\"}[8h])",
+        "legendFormat": "Root CA",
+        "refId": "A"
+      }]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Intermediate CA expires in",
+      "description": "The intermediate signs every certificate this CA issues. If it lapses, every leaf it signed stops verifying.",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "dark-red", "value": null },
+              { "color": "orange", "value": 90 },
+              { "color": "green", "value": 365 }
+            ]
+          },
+          "mappings": []
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "pib-vm" },
+        "expr": "last_over_time(pib_cert_days_remaining{kind=\"intermediate\"}[8h])",
+        "legendFormat": "Intermediate CA",
+        "refId": "A"
+      }]
+    },
+    {
       "id": 6,
       "type": "table",
       "title": "Certificate Inventory",
       "description": "All monitored TLS certificates with expiry status",
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 4 },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 8 },
       "options": {
         "sortBy": [{ "displayName": "Days Remaining", "desc": false }],
         "footer": { "show": false }
@@ -247,7 +317,7 @@
       "type": "timeseries",
       "title": "Days Remaining Over Time",
       "description": "Certificate expiry countdown — watch for certs approaching zero",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 20 },
       "options": {
         "tooltip": { "mode": "multi", "sort": "asc" },
         "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }
