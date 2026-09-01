@@ -1,0 +1,33 @@
+apiVersion: 1
+
+# Delivery target for the rules in rules.yaml. NOT loaded by default.
+#
+# To enable webhook delivery:
+#   1. cp contactpoints.yaml.example contactpoints.yaml
+#   2. set ALERT_WEBHOOK_URL in .env  (Slack/Discord/Teams incoming webhook,
+#      or anything that accepts a JSON POST)
+#   3. make restart
+#
+# Step 2 is not optional. Grafana treats an empty 'url' as fatal and will refuse
+# to start at all, which is why this ships as .example rather than active.
+#
+# Until then the rules still evaluate and fire — they are visible under Alerting
+# in Grafana, they are just not delivered anywhere.
+
+contactPoints:
+  - orgId: 1
+    name: pib-alerts
+    receivers:
+      - uid: pib-alerts-webhook
+        type: webhook
+        settings:
+          url: ${ALERT_WEBHOOK_URL}
+        disableResolveMessage: false
+
+policies:
+  - orgId: 1
+    receiver: pib-alerts
+    group_by: [alertname, host]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 12h
