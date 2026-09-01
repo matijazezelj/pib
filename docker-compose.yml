@@ -30,11 +30,27 @@ services:
       - SCAN_ON_STARTUP=${SCAN_ON_STARTUP:-true}
       - WARN_DAYS=${WARN_DAYS:-30}
       - CRITICAL_DAYS=${CRITICAL_DAYS:-7}
+      - CA_WARN_DAYS=${CA_WARN_DAYS:-365}
+      - CA_CRITICAL_DAYS=${CA_CRITICAL_DAYS:-90}
+      - CA_CERTS_DIR=/ca-certs
+    volumes:
+      # certs/ only — never the whole volume, whose secrets/ holds both private
+      # keys and the CA passphrase in the clear.
+      - type: volume
+        source: pib-step-data
+        target: /ca-certs
+        read_only: true
+        volume:
+          subpath: certs
     networks:
       - pib
     depends_on:
-      - pib-ca
-      - pib-victoriametrics
+      # Gated on health, not just start: the CA creates certs/ during first-boot
+      # init, and the /ca-certs mount cannot resolve before that exists.
+      pib-ca:
+        condition: service_healthy
+      pib-victoriametrics:
+        condition: service_started
 
   pib-victoriametrics:
     image: victoriametrics/victoria-metrics:latest
@@ -62,6 +78,8 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/pib-overview.json
+      # Consumed by provisioning/alerting/contactpoints.yaml
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
     volumes:
       - pib-grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro

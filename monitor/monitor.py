@@ -79,6 +79,28 @@ if CA_HOST and CA_HOST not in MONITOR_HOSTS:
 WARN_DAYS = _int_env("WARN_DAYS", "30")
 CRITICAL_DAYS = _int_env("CRITICAL_DAYS", "7")
 
+# The root and intermediate need far more lead time than a leaf: replacing them
+# means re-anchoring trust on every machine that trusts this CA.
+CA_WARN_DAYS = _int_env("CA_WARN_DAYS", "365")
+CA_CRITICAL_DAYS = _int_env("CA_CRITICAL_DAYS", "90")
+
+# Read-only mount of the step-ca volume's certs/ subdirectory. Only the public
+# certificates are mounted — never secrets/, which holds the private keys and
+# the CA passphrase in the clear.
+CA_CERTS_DIR = os.environ.get("CA_CERTS_DIR", "/ca-certs")
+CA_CERT_FILES = (("root_ca", "root", "root_ca.crt"),
+                 ("intermediate_ca", "intermediate", "intermediate_ca.crt"))
+
+# Certificates whose entire lifetime is shorter than their warning window are
+# renewed automatically (step-ca's own API leaf lives ~24h), so an absolute day
+# count says nothing about their health — judge those on lifetime consumed.
+SHORT_LIVED_WARN_RATIO = 0.30
+SHORT_LIVED_CRITICAL_RATIO = 0.15
+
+STATUS_OK, STATUS_WARNING, STATUS_CRITICAL, STATUS_EXPIRED = 0, 1, 2, 3
+STATUS_NAMES = {STATUS_OK: "OK", STATUS_WARNING: "WARNING",
+                STATUS_CRITICAL: "CRITICAL", STATUS_EXPIRED: "EXPIRED"}
+
 SESSION = requests.Session()
 
 
@@ -152,21 +174,54 @@ def check_cert(entry: str) -> dict | None:
         logger.warning("Could not parse DER cert for %s: %s", entry, e)
         return None
 
+    return _describe_cert(cert_obj, entry, "endpoint", fallback_cn=host)
+
+
+def _classify(days_remaining: int, lifetime_ratio: float,
+              valid_days: int, kind: str) -> int:
+    if days_remaining < 0:
+        return STATUS_EXPIRED
+
+    warn, critical = ((WARN_DAYS, CRITICAL_DAYS) if kind == "endpoint"
+                      else (CA_WARN_DAYS, CA_CRITICAL_DAYS))
+
+    if valid_days <= warn:
+        if lifetime_ratio < SHORT_LIVED_CRITICAL_RATIO:
+            return STATUS_CRITICAL
+        if lifetime_ratio < SHORT_LIVED_WARN_RATIO:
+            return STATUS_WARNING
+        return STATUS_OK
+
+    if days_remaining < critical:
+        return STATUS_CRITICAL
+    if days_remaining < warn:
+        return STATUS_WARNING
+    return STATUS_OK
+
+
+def _describe_cert(cert_obj, name: str, kind: str, fallback_cn: str) -> dict | None:
     try:
         not_after = cert_obj.not_valid_after_utc
         not_before = cert_obj.not_valid_before_utc
         now = datetime.now(timezone.utc)
         # math.floor handles negative deltas correctly: -0.5 → -1
         days_remaining = math.floor((not_after - now).total_seconds() / 86400)
-        is_expired = days_remaining < 0
-        is_not_yet_valid = now < not_before
-        is_critical = not is_expired and days_remaining < CRITICAL_DAYS
-        is_warning = not is_expired and not is_critical and days_remaining < WARN_DAYS
+
+        # Computed in seconds, not the floored day count: a 24h cert is always
+        # "0 days remaining" and would otherwise look permanently expired.
+        lifetime_seconds = (not_after - not_before).total_seconds()
+        lifetime_ratio = (
+            max(0.0, (not_after - now).total_seconds() / lifetime_seconds)
+            if lifetime_seconds > 0 else 0.0
+        )
+        valid_days = int(lifetime_seconds / 86400)
+
+        status = _classify(days_remaining, lifetime_ratio, valid_days, kind)
 
         try:
             cn = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
         except IndexError:
-            cn = host
+            cn = fallback_cn
         try:
             issuer_cn = cert_obj.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
         except IndexError:
@@ -178,26 +233,47 @@ def check_cert(entry: str) -> dict | None:
         except x509.ExtensionNotFound:
             sans = []
 
-        serial = str(cert_obj.serial_number)
-
         return {
-            "host": entry,
+            "host": name,
+            "kind": kind,
             "cn": cn,
             "sans": ",".join(sans) if sans else cn,
             "issuer": issuer_cn,
-            "serial": serial,
+            "serial": str(cert_obj.serial_number),
             "not_before": not_before.isoformat(),
             "not_after": not_after.isoformat(),
             "days_remaining": days_remaining,
-            "valid_days": int((not_after - not_before).total_seconds() / 86400),
-            "is_expired": is_expired,
-            "is_not_yet_valid": is_not_yet_valid,
-            "is_warning": is_warning,
-            "is_critical": is_critical,
+            "valid_days": valid_days,
+            "lifetime_ratio": lifetime_ratio,
+            "status": status,
+            "is_expired": status == STATUS_EXPIRED,
+            "is_not_yet_valid": now < not_before,
+            "is_warning": status == STATUS_WARNING,
+            "is_critical": status == STATUS_CRITICAL,
         }
     except Exception as e:
-        logger.warning("Error processing cert for %s: %s", entry, e)
+        logger.warning("Error processing cert for %s: %s", name, e)
         return None
+
+
+def check_ca_cert(name: str, kind: str, filename: str) -> dict | None:
+    """Read a CA certificate straight off the mounted volume.
+
+    Deliberately not over TLS: the root and intermediate are never served in a
+    handshake, and this still reports if step-ca itself is down.
+    """
+    path = os.path.join(CA_CERTS_DIR, filename)
+    try:
+        with open(path, "rb") as fh:
+            cert_obj = x509.load_pem_x509_certificate(fh.read())
+    except FileNotFoundError:
+        logger.warning("CA certificate not found at %s — is the CA initialised?", path)
+        return None
+    except Exception as e:
+        logger.warning("Could not read CA certificate %s: %s", path, e)
+        return None
+
+    return _describe_cert(cert_obj, name, kind, fallback_cn=name)
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -210,7 +286,7 @@ def _ts_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-def push_metrics(certs: list[dict], failed: list[str]) -> None:
+def push_metrics(certs: list[dict], failed: list[tuple[str, str]]) -> None:
     ts = _ts_ms()
     lines = []
 
@@ -227,18 +303,22 @@ def push_metrics(certs: list[dict], failed: list[str]) -> None:
         f"pib_last_scan_timestamp {ts} {ts}",
     ]
 
-    # Emitted for every configured host, including ones we could not reach —
+    # Emitted for every configured target, including ones we could not reach —
     # without this a host that stops responding just keeps serving its last
     # known days_remaining and the expiry countdown silently freezes.
-    for entry in [c["host"] for c in certs] + failed:
+    checked = [(c["host"], c["kind"], 1) for c in certs]
+    for name, kind in failed:
+        checked.append((name, kind, 0))
+    for name, kind, ok in checked:
         lines.append(
-            f'pib_cert_check_success{{host="{_safe_label(entry)}"}} '
-            f'{0 if entry in failed else 1} {ts}'
+            f'pib_cert_check_success{{host="{_safe_label(name)}",'
+            f'kind="{_safe_label(kind)}"}} {ok} {ts}'
         )
 
     for c in certs:
         labels = (
             f'host="{_safe_label(c["host"])}",'
+            f'kind="{_safe_label(c["kind"])}",'
             f'cn="{_safe_label(c["cn"])}",'
             f'issuer="{_safe_label(c["issuer"])}",'
             f'sans="{_safe_label(c["sans"])}"'
@@ -248,6 +328,10 @@ def push_metrics(certs: list[dict], failed: list[str]) -> None:
             f"pib_cert_expiry_timestamp{{{labels}}} {int(datetime.fromisoformat(c['not_after']).timestamp() * 1000)} {ts}",
             f"pib_cert_valid_days{{{labels}}} {c['valid_days']} {ts}",
             f"pib_cert_not_yet_valid{{{labels}}} {1 if c['is_not_yet_valid'] else 0} {ts}",
+            f"pib_cert_lifetime_remaining_ratio{{{labels}}} {c['lifetime_ratio']:.4f} {ts}",
+            # Alert rules key off this so the thresholds live in one place
+            # rather than being restated in PromQL.
+            f"pib_cert_status{{{labels}}} {c['status']} {ts}",
         ]
 
     payload = "\n".join(lines) + "\n"
@@ -277,33 +361,46 @@ def push_metrics(certs: list[dict], failed: list[str]) -> None:
 
 # ── Scan cycle ────────────────────────────────────────────────────────────────
 
+def _log_cert(name: str, cert: dict) -> None:
+    logger.info("  %s — %s — %d days remaining [%s]",
+                name, cert["cn"], cert["days_remaining"],
+                STATUS_NAMES[cert["status"]])
+
+
 def run_scan() -> None:
-    if not MONITOR_HOSTS:
-        logger.warning("No hosts configured. Set MONITOR_HOSTS env var.")
+    ca_targets = [(name, kind, fn) for name, kind, fn in CA_CERT_FILES
+                  if os.path.isdir(CA_CERTS_DIR)]
+    total = len(MONITOR_HOSTS) + len(ca_targets)
+
+    if not total:
+        logger.warning("Nothing to scan. Set MONITOR_HOSTS or mount %s.", CA_CERTS_DIR)
         push_metrics([], [])
         return
 
-    logger.info("─── PIB scan: %d hosts ───", len(MONITOR_HOSTS))
+    logger.info("─── PIB scan: %d endpoints, %d CA certs ───",
+                len(MONITOR_HOSTS), len(ca_targets))
     certs = []
     failed = []
 
     for entry in MONITOR_HOSTS:
         cert = check_cert(entry)
         if cert is None:
-            failed.append(entry)
+            failed.append((entry, "endpoint"))
             continue
         certs.append(cert)
-        status = "EXPIRED" if cert["is_expired"] else (
-            "CRITICAL" if cert["is_critical"] else (
-                "WARNING" if cert["is_warning"] else "OK"
-            )
-        )
-        logger.info("  %s — %s — %d days remaining [%s]",
-                    entry, cert["cn"], cert["days_remaining"], status)
+        _log_cert(entry, cert)
+
+    for name, kind, filename in ca_targets:
+        cert = check_ca_cert(name, kind, filename)
+        if cert is None:
+            failed.append((name, kind))
+            continue
+        certs.append(cert)
+        _log_cert(name, cert)
 
     push_metrics(certs, failed)
     logger.info("─── PIB scan complete: %d/%d certs checked, %d unreachable ───",
-                len(certs), len(MONITOR_HOSTS), len(failed))
+                len(certs), total, len(failed))
 
 
 def main() -> None:
