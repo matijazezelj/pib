@@ -25,6 +25,7 @@ services:
     environment:
       - VICTORIAMETRICS_URL=${VICTORIAMETRICS_URL:-http://pib-victoriametrics:8428}
       - MONITOR_HOSTS=${MONITOR_HOSTS:-pib-ca:9000}
+      - CA_HOST=${CA_HOST:-pib-ca:9000}
       - SCAN_INTERVAL_HOURS=${SCAN_INTERVAL_HOURS:-6}
       - SCAN_ON_STARTUP=${SCAN_ON_STARTUP:-true}
       - WARN_DAYS=${WARN_DAYS:-30}
