@@ -1,0 +1,193 @@
+apiVersion: 1
+
+# Thresholds are NOT restated here. The monitor exports pib_cert_status
+# (0 ok / 1 warning / 2 critical / 3 expired) already having applied the
+# WARN_DAYS, CRITICAL_DAYS, CA_WARN_DAYS and CA_CRITICAL_DAYS settings, so
+# changing a threshold in .env changes the alerts too.
+
+groups:
+  - orgId: 1
+    name: certificates
+    folder: PIB
+    interval: 5m
+    rules:
+
+      - uid: pib-cert-expired
+        title: Certificate expired
+        condition: THRESHOLD
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.host }} is serving an EXPIRED certificate"
+          description: "CN {{ $labels.cn }} (issuer {{ $labels.issuer }}) has passed its notAfter date. Clients are failing TLS verification right now."
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: QUERY
+            relativeTimeRange: { from: 28800, to: 0 }
+            datasourceUid: pib-vm
+            model:
+              refId: QUERY
+              datasource: { type: prometheus, uid: pib-vm }
+              expr: last_over_time(pib_cert_status[8h])
+              instant: true
+          - refId: LAST
+            datasourceUid: __expr__
+            model:
+              refId: LAST
+              type: reduce
+              reducer: last
+              expression: QUERY
+          - refId: THRESHOLD
+            datasourceUid: __expr__
+            model:
+              refId: THRESHOLD
+              type: threshold
+              expression: LAST
+              conditions:
+                - evaluator: { type: gt, params: [2.5] }
+
+      - uid: pib-cert-critical
+        title: Certificate expiring imminently
+        condition: THRESHOLD
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.host }} certificate is in CRITICAL expiry window"
+          description: "CN {{ $labels.cn }} is past the critical threshold. If this is an ACME cert, renewal has probably stopped working."
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: QUERY
+            relativeTimeRange: { from: 28800, to: 0 }
+            datasourceUid: pib-vm
+            model:
+              refId: QUERY
+              datasource: { type: prometheus, uid: pib-vm }
+              expr: last_over_time(pib_cert_status{kind="endpoint"}[8h])
+              instant: true
+          - refId: LAST
+            datasourceUid: __expr__
+            model:
+              refId: LAST
+              type: reduce
+              reducer: last
+              expression: QUERY
+          - refId: THRESHOLD
+            datasourceUid: __expr__
+            model:
+              refId: THRESHOLD
+              type: threshold
+              expression: LAST
+              conditions:
+                - evaluator: { type: gt, params: [1.5] }
+
+      - uid: pib-ca-chain-expiring
+        title: CA root or intermediate expiring
+        condition: THRESHOLD
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "PIB {{ $labels.host }} is approaching expiry"
+          description: "Replacing the root or intermediate means re-anchoring trust on every machine that trusts this CA. Start planning now — this is not a same-week job."
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: QUERY
+            relativeTimeRange: { from: 28800, to: 0 }
+            datasourceUid: pib-vm
+            model:
+              refId: QUERY
+              datasource: { type: prometheus, uid: pib-vm }
+              expr: last_over_time(pib_cert_status{kind=~"root|intermediate"}[8h])
+              instant: true
+          - refId: LAST
+            datasourceUid: __expr__
+            model:
+              refId: LAST
+              type: reduce
+              reducer: last
+              expression: QUERY
+          - refId: THRESHOLD
+            datasourceUid: __expr__
+            model:
+              refId: THRESHOLD
+              type: threshold
+              expression: LAST
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+
+      - uid: pib-endpoint-unreachable
+        title: Endpoint unreachable
+        condition: THRESHOLD
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.host }} could not be checked"
+          description: "Its expiry countdown is stale, not healthy — the last value keeps being served until the endpoint responds again."
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: QUERY
+            relativeTimeRange: { from: 28800, to: 0 }
+            datasourceUid: pib-vm
+            model:
+              refId: QUERY
+              datasource: { type: prometheus, uid: pib-vm }
+              expr: last_over_time(pib_cert_check_success[8h])
+              instant: true
+          - refId: LAST
+            datasourceUid: __expr__
+            model:
+              refId: LAST
+              type: reduce
+              reducer: last
+              expression: QUERY
+          - refId: THRESHOLD
+            datasourceUid: __expr__
+            model:
+              refId: THRESHOLD
+              type: threshold
+              expression: LAST
+              conditions:
+                - evaluator: { type: lt, params: [0.5] }
+
+      - uid: pib-monitor-stalled
+        title: Monitor has stopped scanning
+        condition: THRESHOLD
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No completed scan in over 2x the scan interval"
+          description: "Every other alert here is now blind: panels keep serving the last known values, so certificates look healthy whether they are or not."
+        noDataState: Alerting
+        execErrState: Error
+        data:
+          - refId: QUERY
+            relativeTimeRange: { from: 86400, to: 0 }
+            datasourceUid: pib-vm
+            model:
+              refId: QUERY
+              datasource: { type: prometheus, uid: pib-vm }
+              expr: (time() * 1000 - last_over_time(pib_last_scan_timestamp[24h])) / 1000 / 3600
+              instant: true
+          - refId: LAST
+            datasourceUid: __expr__
+            model:
+              refId: LAST
+              type: reduce
+              reducer: last
+              expression: QUERY
+          - refId: THRESHOLD
+            datasourceUid: __expr__
+            model:
+              refId: THRESHOLD
+              type: threshold
+              expression: LAST
+              conditions:
+                - evaluator: { type: gt, params: [12] }
