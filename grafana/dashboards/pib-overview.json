@@ -14,7 +14,7 @@
       "id": 1,
       "type": "stat",
       "title": "Expiring Critical (< 7d)",
-      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
         "colorMode": "background",
@@ -46,7 +46,7 @@
       "id": 2,
       "type": "stat",
       "title": "Expiring Soon (< 30d)",
-      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
         "colorMode": "background",
@@ -78,7 +78,7 @@
       "id": 3,
       "type": "stat",
       "title": "Expired",
-      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
         "colorMode": "background",
@@ -107,10 +107,43 @@
       }]
     },
     {
+      "id": 8,
+      "type": "stat",
+      "title": "Unreachable",
+      "description": "Configured endpoints that could not be checked this scan — their expiry countdown is stale.",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          },
+          "mappings": []
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "pib-vm" },
+        "expr": "last_over_time(pib_certs_unreachable[8h])",
+        "legendFormat": "Unreachable",
+        "refId": "A"
+      }]
+    },
+    {
       "id": 4,
       "type": "stat",
       "title": "Total Monitored",
-      "gridPos": { "h": 4, "w": 4, "x": 15, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
         "colorMode": "value",
@@ -136,7 +169,7 @@
       "id": 5,
       "type": "stat",
       "title": "Last Scan",
-      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
         "colorMode": "value",
