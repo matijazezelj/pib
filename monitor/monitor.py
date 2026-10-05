@@ -118,6 +118,25 @@ def _is_ip_address(host: str) -> bool:
         return False
 
 
+def classify_expiry(remaining_s: float, lifetime_s: float) -> tuple[bool, bool, bool]:
+    """Return (is_expired, is_critical, is_warning) for a certificate.
+
+    WARN_DAYS / CRITICAL_DAYS are caps, scaled down for short-lived certificates. A fixed
+    "critical under 7 days" rule can never be satisfied by a 24-hour certificate, which is
+    step-ca's default for its own TLS cert and which it renews automatically, so the monitor
+    reported a healthy CA as permanently critical. Thresholds are the smaller of the configured
+    days and a fraction of the certificate's lifetime (warn at 1/3, critical at 1/10). For
+    ordinary 90-day and 1-year certificates the configured days still win, so nothing changes.
+    """
+    if remaining_s < 0:
+        return True, False, False
+    warn_s = min(WARN_DAYS * 86400, lifetime_s / 3)
+    crit_s = min(CRITICAL_DAYS * 86400, lifetime_s / 10)
+    critical = remaining_s < crit_s
+    warning = not critical and remaining_s < warn_s
+    return False, critical, warning
+
+
 def check_cert(entry: str) -> dict | None:
     try:
         host, port = _parse_host_port(entry)
@@ -157,11 +176,12 @@ def check_cert(entry: str) -> dict | None:
         not_before = cert_obj.not_valid_before_utc
         now = datetime.now(timezone.utc)
         # math.floor handles negative deltas correctly: -0.5 → -1
-        days_remaining = math.floor((not_after - now).total_seconds() / 86400)
-        is_expired = days_remaining < 0
+        remaining_s = (not_after - now).total_seconds()
+        days_remaining = math.floor(remaining_s / 86400)
         is_not_yet_valid = now < not_before
-        is_critical = not is_expired and days_remaining < CRITICAL_DAYS
-        is_warning = not is_expired and not is_critical and days_remaining < WARN_DAYS
+        is_expired, is_critical, is_warning = classify_expiry(
+            remaining_s, (not_after - not_before).total_seconds()
+        )
 
         try:
             cn = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
@@ -189,6 +209,7 @@ def check_cert(entry: str) -> dict | None:
             "not_before": not_before.isoformat(),
             "not_after": not_after.isoformat(),
             "days_remaining": days_remaining,
+            "hours_remaining": round(remaining_s / 3600, 1),
             "valid_days": int((not_after - not_before).total_seconds() / 86400),
             "is_expired": is_expired,
             "is_not_yet_valid": is_not_yet_valid,
@@ -245,6 +266,7 @@ def push_metrics(certs: list[dict], failed: list[str]) -> None:
         )
         lines += [
             f"pib_cert_days_remaining{{{labels}}} {c['days_remaining']} {ts}",
+            f"pib_cert_hours_remaining{{{labels}}} {c['hours_remaining']} {ts}",
             f"pib_cert_expiry_timestamp{{{labels}}} {int(datetime.fromisoformat(c['not_after']).timestamp() * 1000)} {ts}",
             f"pib_cert_valid_days{{{labels}}} {c['valid_days']} {ts}",
             f"pib_cert_not_yet_valid{{{labels}}} {1 if c['is_not_yet_valid'] else 0} {ts}",
