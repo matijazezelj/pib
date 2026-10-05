@@ -117,8 +117,8 @@ healthy.
 | `CA_HOST` | `pib-ca:9000` | Always prepended to `MONITOR_HOSTS`; set empty to opt out |
 | `SCAN_INTERVAL_HOURS` | `6` | Monitor scan frequency |
 | `SCAN_ON_STARTUP` | `true` | Run a scan immediately on container start |
-| `WARN_DAYS` | `30` | Days remaining threshold for warning |
-| `CRITICAL_DAYS` | `7` | Days remaining threshold for critical |
+| `WARN_DAYS` | `30` | Warning threshold in days. Capped at 1/3 of the certificate's lifetime, so short-lived certs do not alert permanently |
+| `CRITICAL_DAYS` | `7` | Critical threshold in days. Capped at 1/10 of the certificate's lifetime (a 24 h cert goes critical in its last 2.4 h) |
 | `VICTORIAMETRICS_RETENTION` | `365d` | How long metrics are kept |
 | `BIND_ADDR` | `127.0.0.1` | Host interface to publish ports on; `0.0.0.0` exposes to the LAN |
 
@@ -136,7 +136,8 @@ healthy.
 | `pib_certs_total` | — | Total monitored certs |
 | `pib_certs_expired` | — | Currently expired certs |
 | `pib_certs_expiring_warning` | — | Certs expiring within `WARN_DAYS` |
-| `pib_certs_expiring_critical` | — | Certs expiring within `CRITICAL_DAYS` |
+| `pib_certs_expiring_critical` | — | Certs inside their critical window (`CRITICAL_DAYS`, capped by lifetime) |
+| `pib_cert_hours_remaining` | `host, cn, issuer, sans` | Hours until expiry. Use this for short-lived certs, where `pib_cert_days_remaining` is always 0 |
 | `pib_certs_unreachable` | — | Configured endpoints that could not be checked |
 | `pib_last_scan_timestamp` | — | Last scan Unix timestamp (ms) |
 
