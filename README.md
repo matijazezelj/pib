@@ -132,6 +132,7 @@ healthy.
 | `pib_cert_expiry_timestamp` | `host`, `cn`, `issuer`, `sans` | Expiry as Unix timestamp (ms) |
 | `pib_cert_valid_days` | `host`, `cn`, `issuer`, `sans` | Total validity period (days) |
 | `pib_cert_not_yet_valid` | `host`, `cn`, `issuer`, `sans` | `1` if the cert's `notBefore` is in the future |
+| `pib_cert_status` | `host`, `cn`, `issuer`, `sans` | `0` ok, `1` warning, `2` critical, `3` expired — same lifetime-capped thresholds as the counters below |
 | `pib_cert_check_success` | `host` | `1` if the endpoint was checked this scan, `0` if it could not be reached |
 | `pib_certs_total` | — | Total monitored certs |
 | `pib_certs_expired` | — | Currently expired certs |
