@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
+- The dashboard read a healthy step-ca certificate as `0` days: the inventory now shows time remaining counted from the expiry date
+  (so it stays current between scans, e.g. `15 hours`), plus a Status column driven by the new `pib_cert_status` metric, which uses
+  the same lifetime-capped thresholds as the counters. The raw `pib_cert_days_remaining` header is gone, and the countdown graph is
+  in seconds instead of days. The stat titles no longer promise fixed `< 7d` / `< 30d` windows.
+- Inventory and countdown rows from a host removed from `MONITOR_HOSTS`, or a certificate whose labels changed, no longer linger for
+  8 h after the scan that stopped seeing them; an unreachable host keeps its last known row. `Last Scan` holds its value between scans.
 - A healthy CA was reported as permanently critical. step-ca's own TLS certificate lives 24 hours and renews itself, but the
   fixed "critical under 7 days" rule is true from the moment it is issued, so the dashboard showed `Expiring Critical: 1` and
   `0 days` forever. Thresholds are now capped at a fraction of each certificate's lifetime (warn 1/3, critical 1/10); 90-day and

@@ -137,6 +137,19 @@ def classify_expiry(remaining_s: float, lifetime_s: float) -> tuple[bool, bool, 
     return False, critical, warning
 
 
+def cert_status(cert: dict) -> int:
+    """0 ok, 1 warning, 2 critical, 3 expired — per certificate, using the same
+    lifetime-capped thresholds as the pib_certs_expiring_* counters, so a dashboard
+    can colour a 24 h cert by its real state instead of a fixed days scale."""
+    if cert["is_expired"]:
+        return 3
+    if cert["is_critical"]:
+        return 2
+    if cert["is_warning"]:
+        return 1
+    return 0
+
+
 def check_cert(entry: str) -> dict | None:
     try:
         host, port = _parse_host_port(entry)
@@ -270,6 +283,7 @@ def push_metrics(certs: list[dict], failed: list[str]) -> None:
             f"pib_cert_expiry_timestamp{{{labels}}} {int(datetime.fromisoformat(c['not_after']).timestamp() * 1000)} {ts}",
             f"pib_cert_valid_days{{{labels}}} {c['valid_days']} {ts}",
             f"pib_cert_not_yet_valid{{{labels}}} {1 if c['is_not_yet_valid'] else 0} {ts}",
+            f"pib_cert_status{{{labels}}} {cert_status(c)} {ts}",
         ]
 
     payload = "\n".join(lines) + "\n"
